@@ -4,7 +4,7 @@ from model import *
 import numpy as np
 
 # Path to your data file
-file_path = "data/W25000_L25000"
+file_path = "data/W25000_L1000"
 idvg_path = file_path + "_idvg.data"
 idvd_path = file_path + "_idvd.data"
 

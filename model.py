@@ -8,7 +8,7 @@ import numpy as np
 
 # Always true values
 Kn = 450e-6
-Na = 7e17 * 1e6 # cm^-3 to m^-3
+Na = 7e17 * 1e6 # cm^-3 to m^-3 
 tox = 10.5e-9
 ni = 1e10 * 1e6 # cm^-3
 q = 1.602e-19 # C

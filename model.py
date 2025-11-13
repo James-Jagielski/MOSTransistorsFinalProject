@@ -4,6 +4,13 @@
 # functions for plotting against the desired data
 
 import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use('TkAgg')
+%matplotlib inline
+import matplotlib.pyplot as plt
+from scipy.stats import linregress
+from scipy.optimize import curve_fit
 
 
 # Always true values
@@ -36,16 +43,62 @@ class EKV_Model:
         self.idvd_data = idvd_data
         self.Width = Width
         self.Length = Length
+        self.vds = None
+        self.ids = None
+        self.vgs = None
+        self.vsb = None
         # all other EKV Model parameters here (incomplete)
         self.Is = None
+        self.Io = None
         self.Kappa = None
         self.Vt0 = None
-        self.Ut = None
-
+        self.mu_0 = None
+        self.theta = None
+        self.alpha = None
+        self.phi_0 = None
+        self.gamma = None
+        self.Vfb = None
+        self.tox = 10.5e-9
+        self.e_ox = 3.45e-11
+        self.Ut = 0.02585 # ~ .026
+        self.cox = 3.45e-11 / 10.5e-9 # eox/toc
     # generic fitting function
     def fit_parameter(self):
         # 
         self.parameter = 0 # obviously edit this #
+    
+    def filter_data(self, datafile):
+        '''Need to change this but a good starting point'''
+        self.vds = datafile["VDS"].values
+        self.ids = datafile["IDS"].values
+        self.vgs = datafile["VGS"].values
+        self.vsb = datafile["VSB"].values
+    
+    # kappa and Io extraction
+    def extract_kappa_I0(self, vsb_val, window_size=7):
+        '''This is created for finding all kappa and Io values for vsb value'''
+        subset = self.idvg_data[self.idvg_data["VSB"] == vsb_val].sort_values("VGS")
+        self.vgs = subset["VGS"].values
+        self.ids = subset["IDS"].values
+        ln_IDS = np.log(self.ids)
+        best_r2 = -np.inf
+        best_indices = None
+        for i in range(len(self.vgs) - window_size):
+            x_seg = self.vgs[i:i + window_size]
+            y_seg = ln_IDS[i:i + window_size]
+            slope, intercept, r_value, _, _ = linregress(x_seg, y_seg)
+            if r_value**2 > best_r2:
+                best_r2 = r_value**2
+                best_indices = (i, i + window_size)
+
+        i_start, i_end = best_indices
+        x_lin = self.vgs[i_start:i_end]
+        y_lin = ln_IDS[i_start:i_end]
+
+        slope, intercept, r_value, _, _ = linregress(x_lin, y_lin)
+        self.Kappa = slope * self.Ut
+        self.Io = np.exp(intercept)
+        return self.Kappa & self.Io
 
     def fit_all(self):
         """

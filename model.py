@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use('TkAgg')
-%matplotlib inline
 import matplotlib.pyplot as plt
 from scipy.stats import linregress
 from scipy.optimize import curve_fit
@@ -27,6 +26,10 @@ T = 300 # K
 phiT = k*T/q
 phiF = phiT * np.log(Na/ni)
 
+VDSID = 0
+VGSID = 1
+VSBID = 2
+IDSID = 3
 
 
 class EKV_Model:
@@ -77,9 +80,10 @@ class EKV_Model:
     # kappa and Io extraction
     def extract_kappa_I0(self, vsb_val, window_size=7):
         '''This is created for finding all kappa and Io values for vsb value'''
-        subset = self.idvg_data[self.idvg_data["VSB"] == vsb_val].sort_values("VGS")
-        self.vgs = subset["VGS"].values
-        self.ids = subset["IDS"].values
+        # subset = self.idvg_data[self.idvg_data[:, VSBID] == vsb_val].sort_values("VGS")
+        subset = self.idvg_data[self.idvg_data[:, VSBID] == vsb_val]
+        self.vgs = subset[:, VGSID]
+        self.ids = subset[:, IDSID]
         ln_IDS = np.log(self.ids)
         best_r2 = -np.inf
         best_indices = None
@@ -98,13 +102,36 @@ class EKV_Model:
         slope, intercept, r_value, _, _ = linregress(x_lin, y_lin)
         self.Kappa = slope * self.Ut
         self.Io = np.exp(intercept)
-        return self.Kappa & self.Io
+        return self.Kappa, self.Io
+    
+    def extract_all_kappas_IOs(self, plot=True):
+        # Kappa should be fit for each curve
+        kappas = []
+        ios = []
+        for vsb in (vsbs := np.unique(self.idvg_data[:, VSBID])):
+            kappa, io = self.extract_kappa_I0(vsb)
+            kappas.append(kappa)
+            ios.append(io)
+        if plot:
+            plt.figure()
+            plt.plot(vsbs, kappas)
+            plt.title("K against VSB")
+            plt.xlabel("VSB")
+            plt.show()
+            plt.figure()
+            plt.plot(vsbs, ios)
+            plt.title("I0 against VSB")
+            plt.xlabel("VSB")
+            plt.show()
+        
 
     def fit_all(self):
         """
         Method to fit all parameters in order.
         """
-        raise NotImplementedError("fit_all is not complete yet")
+        # generate kappas for each unique VSB
+        self.extract_all_kappas_IOs() # this creates self.kappas
+
 
     def model(self, VGB, VSB, VDB):
         """
@@ -126,3 +153,74 @@ class EKV_Model:
         # sum
         ID = IF - IR
         return ID
+    
+    def plot(self):
+        """
+        Plots model data against reference data
+        """
+
+        ############## PLOTTING ID VDS ###################
+        unique_vgss = np.unique(self.idvd_data[:, VGSID])
+        unique_vsbs = np.unique(self.idvd_data[:, VSBID])
+
+        fig, axs = plt.subplots(2, len(unique_vsbs), figsize=(15, 8))
+
+        for i, vsb in enumerate(unique_vsbs):
+            mask_vsb = self.idvd_data[:, VSBID] == vsb
+            for vgs in unique_vgss:
+                mask_vgs = self.idvd_data[:, VGSID] == vgs
+                mask = mask_vgs & mask_vsb
+
+                axs[0, i].plot(
+                    self.idvd_data[mask][:, VDSID],
+                    self.idvd_data[mask][:, IDSID],
+                    label=f"Ref VGS: {vgs}",
+                    linestyle = '--'
+                )
+            axs[0, i].legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0,
+            )
+            axs[0, i].set_title(f"IDS / VDS Curves for VSB = {vsb}")
+
+        ############# PLOTTING ID VGS ###################
+        unique_vdss = np.unique(self.idvg_data[:, VDSID])
+        unique_vsbs = np.unique(self.idvg_data[:, VSBID])
+
+        for i, vds in enumerate(unique_vdss):
+            mask_vds = self.idvg_data[:, VDSID] == vds
+            for vsb in unique_vsbs:
+                mask_vsb = self.idvg_data[:, VSBID] == vsb
+                mask = mask_vds & mask_vsb
+
+                axs[1, i].plot(
+                    self.idvg_data[mask][:, VGSID],
+                    self.idvg_data[mask][:, IDSID],
+                    label=f"Ref VDS: {vds}",
+                    linestyle = '--'
+                )
+            axs[1, i].legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0,
+            )
+            axs[1, i].set_title(f"IDS / VGS Curves for VDS = {vds}")
+
+        for ax in axs[0, :]:
+            ax.legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0,
+            )
+        for ax in axs[1, :]:
+            ax.legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0,
+                )
+
+        plt.subplots_adjust(wspace=0.5, right=0.9)
+        plt.show()
+
+

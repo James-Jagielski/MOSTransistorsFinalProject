@@ -18,10 +18,9 @@ length = float(filename.split("_")[1][1:]) * 1e-9
 # print(width)
 
 mosfet = EKV_Model(idvg_data, idvd_data, width, length)
+mosfet.fit_all()
 
-try:
-    mosfet.fit_all()
-except Exception as e:
-    print(e)
 
+
+# mosfet.plot()
 

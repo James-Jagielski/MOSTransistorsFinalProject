@@ -123,7 +123,7 @@ class EKV_Model:
             plt.title("I0 against VSB")
             plt.xlabel("VSB")
             plt.show()
-        self.Kappa = np.average(np.array(kappas))
+        self.Kappa = kappas[0]
         self.Is = np.average(np.array(ios))
         
     def get_Vt(self, plot=False, vsb=0):
@@ -155,7 +155,7 @@ class EKV_Model:
             plt.plot(VGS_fit, ID_fit, label='fitted data')
             plt.legend()
             plt.grid()
-        return Vt, VGS_fit, ID_fit
+        return Vt
     
         print("FIT VT0 is CURRENTLY NOT IMPLEMENTED")
 
@@ -170,7 +170,7 @@ class EKV_Model:
         """
         # generate kappas for each unique VSB
         self.extract_all_kappas_IOs() # this creates self.kappas
-        self.get_Vt()
+        self.fit_Vts()
 
 
     def model(self, VGB, VSB, VDB):
@@ -236,10 +236,14 @@ class EKV_Model:
         ############# PLOTTING ID VGS ###################
         unique_vdss = np.unique(self.idvg_data[:, VDSID])
         unique_vsbs = np.unique(self.idvg_data[:, VSBID])
+        vgsmax = np.max(self.idvg_data[:, VGSID])
+        vgsmin = np.min(self.idvg_data[:, VGSID])
+        vgs_array = np.linspace(vgsmin, vgsmax, 1000)
 
         for i, vds in enumerate(unique_vdss):
             mask_vds = self.idvg_data[:, VDSID] == vds
             for vsb in unique_vsbs:
+                vgb_array = vgs_array + vsb
                 mask_vsb = self.idvg_data[:, VSBID] == vsb
                 mask = mask_vds & mask_vsb
 
@@ -248,6 +252,12 @@ class EKV_Model:
                     self.idvg_data[mask][:, IDSID],
                     label=f"Ref VDS: {vds}",
                     linestyle = '--'
+                )
+                ### model data ######
+                axs[1, i].plot(
+                    vgs_array,
+                    self.model(vgb_array, vsb, vds + vsb),
+                    label=f"VSB: {vsb}"
                 )
             axs[1, i].legend(
                 loc="center left",

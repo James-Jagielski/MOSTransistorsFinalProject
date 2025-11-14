@@ -104,7 +104,7 @@ class EKV_Model:
         self.Io = np.exp(intercept)
         return self.Kappa, self.Io
     
-    def extract_all_kappas_IOs(self, plot=True):
+    def extract_all_kappas_IOs(self, plot=False):
         # Kappa should be fit for each curve
         kappas = []
         ios = []
@@ -123,7 +123,46 @@ class EKV_Model:
             plt.title("I0 against VSB")
             plt.xlabel("VSB")
             plt.show()
+        self.Kappa = np.average(np.array(kappas))
+        self.Is = np.average(np.array(ios))
         
+    def get_Vt(self, plot=False, vsb=0):
+        # load data from VGS sweeps where VSB = -
+        mask = (self.idvg_data[:, VSBID] == vsb) & (self.idvg_data[:, VDSID] == (np.max(self.idvg_data[:, VDSID])))
+        VGS = self.idvg_data[:, VGSID][mask]
+        ID = self.idvg_data[:, IDSID][mask]
+        # take data close to intercept
+        maxID = max(ID)
+        minID = min(ID)
+        diff = maxID - minID
+
+        mask = (ID > 0.3*diff + minID) & (ID < 0.7*diff + minID)
+        VGS_fit = VGS[mask]
+        ID_fit = ID[mask]
+        # linearize this line
+        slope, intercept = np.polyfit(VGS_fit, ID_fit, 1)
+        VGS_fit = np.linspace(0, 2.5, 100)
+        ID_fit = slope * VGS_fit + intercept
+        # print(f"slope: {slope}, intercept: {intercept}")
+        # find index where ID = 0
+        idx = np.where(ID_fit >= 0)[0][0]
+        Vt = VGS_fit[idx]
+        if plot:
+            plt.figure()
+            plt.plot(VGS, ID, label="data")
+            plt.axvline(Vt, label="Vt0", color='red')
+            plt.plot()
+            plt.plot(VGS_fit, ID_fit, label='fitted data')
+            plt.legend()
+            plt.grid()
+        return Vt, VGS_fit, ID_fit
+    
+        print("FIT VT0 is CURRENTLY NOT IMPLEMENTED")
+
+    def fit_Vts(self):
+        # for now
+        self.Vt0 = self.get_Vt(vsb=0)
+        # eventually this should fit all VT parameters across voltages
 
     def fit_all(self):
         """
@@ -131,6 +170,7 @@ class EKV_Model:
         """
         # generate kappas for each unique VSB
         self.extract_all_kappas_IOs() # this creates self.kappas
+        self.get_Vt()
 
 
     def model(self, VGB, VSB, VDB):
@@ -143,15 +183,14 @@ class EKV_Model:
             raise ValueError("Fit Is before running model")
         if self.Vt0 == None:
             raise ValueError("Fit Vt0 before runnign model")
-        if self.Ut == None:
-            raise ValueError("Fit Ut before runnign model")
         
         # forward current
-        IF = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - self.Vt0) - VSB)/2*self.Ut))**2
+        IF = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - self.Vt0) - VSB)/(2*self.Ut)))**2
         # reverse current
-        IR = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - self.Vt0) - VDB)/2*self.Ut))**2
+        IR = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - self.Vt0) - VDB)/(2*self.Ut)))**2
         # sum
         ID = IF - IR
+        print(f"current {ID}")
         return ID
     
     def plot(self):
@@ -162,20 +201,30 @@ class EKV_Model:
         ############## PLOTTING ID VDS ###################
         unique_vgss = np.unique(self.idvd_data[:, VGSID])
         unique_vsbs = np.unique(self.idvd_data[:, VSBID])
-
+        vdsmax = np.max(self.idvd_data[:, VDSID])
+        vdmin = np.min(self.idvd_data[:, VDSID])
+        vds_array = np.linspace(vdmin, vdsmax, 1000)
+        
         fig, axs = plt.subplots(2, len(unique_vsbs), figsize=(15, 8))
-
+        
         for i, vsb in enumerate(unique_vsbs):
+            vdb_array = vds_array + vsb
             mask_vsb = self.idvd_data[:, VSBID] == vsb
             for vgs in unique_vgss:
                 mask_vgs = self.idvd_data[:, VGSID] == vgs
                 mask = mask_vgs & mask_vsb
-
+                ##### plot reference data
                 axs[0, i].plot(
                     self.idvd_data[mask][:, VDSID],
                     self.idvd_data[mask][:, IDSID],
                     label=f"Ref VGS: {vgs}",
                     linestyle = '--'
+                )
+                ###### plot model data
+                axs[0, i].plot(
+                    vds_array,
+                    self.model(vgs + vsb, vsb, vdb_array),
+                    label=f"VGS: {vgs}"
                 )
             axs[0, i].legend(
                 loc="center left",

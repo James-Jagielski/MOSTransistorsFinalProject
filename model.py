@@ -82,6 +82,8 @@ class EKV_Model:
         '''This is created for finding all kappa and Io values for vsb value'''
         # subset = self.idvg_data[self.idvg_data[:, VSBID] == vsb_val].sort_values("VGS")
         subset = self.idvg_data[self.idvg_data[:, VSBID] == vsb_val]
+        subset = subset[np.argsort(subset[:, VGSID])]
+
         self.vgs = subset[:, VGSID]
         self.ids = subset[:, IDSID]
         ln_IDS = np.log(self.ids)
@@ -233,9 +235,15 @@ class EKV_Model:
             plt.plot(X_array, intercept + slope * X_array, label=f"Fit: gamma = {self.gamma:.6g}")
             plt.legend()
             plt.show()
+            
         self.VFB = np.average(Vts - self.phi0 - self.gamma*X_array)
+        if plot:
+            plt.figure()
+            plt.plot(vsbs, Vts, label="Vts")
+            plt.plot(vsbs, self.get_Vt(vsbs), label='fit')
+            plt.show()
+            
         # print(f"VFB: {self.VFB:.6g} V")
-        plt.legend()
 
     def get_Vt(self, Vsb):
         """
@@ -268,9 +276,9 @@ class EKV_Model:
         
         # forward current
         vt = self.get_Vt(VSB)
-        IF = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - vt) - VSB)/(2*self.Ut)))**2
+        IF = self.Is * np.log1p(1 + np.exp((self.Kappa*(VGB - vt) - VSB)/(2*self.Ut)))**2
         # reverse current
-        IR = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - vt) - VDB)/(2*self.Ut)))**2
+        IR = self.Is * np.log1p(1 + np.exp((self.Kappa*(VGB - vt) - VDB)/(2*self.Ut)))**2
         # sum
         ID = IF - IR
         # print(f"current {ID}")

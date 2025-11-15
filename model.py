@@ -9,7 +9,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from scipy.stats import linregress
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, minimize_scalar 
 
 
 # Always true values
@@ -58,9 +58,9 @@ class EKV_Model:
         self.mu_0 = None
         self.theta = None
         self.alpha = None
-        self.phi_0 = None
+        self.phi0 = None
         self.gamma = None
-        self.Vfb = None
+        self.VFB = None
         self.tox = 10.5e-9
         self.e_ox = 3.45e-11
         self.Ut = 0.02585 # ~ .026
@@ -126,17 +126,19 @@ class EKV_Model:
         self.Kappa = kappas[0]
         self.Is = np.average(np.array(ios))
         
-    def get_Vt(self, plot=False, vsb=0):
+    def fit_Vt(self,vsb=0, vds=0.1,plot=True):
         # load data from VGS sweeps where VSB = -
-        mask = (self.idvg_data[:, VSBID] == vsb) & (self.idvg_data[:, VDSID] == (np.max(self.idvg_data[:, VDSID])))
+        mask = (self.idvg_data[:, VSBID] == vsb) & (self.idvg_data[:, VDSID] == 0.1)
         VGS = self.idvg_data[:, VGSID][mask]
         ID = self.idvg_data[:, IDSID][mask]
         # take data close to intercept
+        # print(vsb)
+        # print(ID)
         maxID = max(ID)
         minID = min(ID)
         diff = maxID - minID
 
-        mask = (ID > 0.3*diff + minID) & (ID < 0.7*diff + minID)
+        mask = (ID > 0.05*diff + minID) & (ID < 0.3*diff + minID)
         VGS_fit = VGS[mask]
         ID_fit = ID[mask]
         # linearize this line
@@ -149,20 +151,87 @@ class EKV_Model:
         Vt = VGS_fit[idx]
         if plot:
             plt.figure()
+            plt.title(f"Vt Extrapolation for VSB = {vsb}")
             plt.plot(VGS, ID, label="data")
             plt.axvline(Vt, label="Vt0", color='red')
             plt.plot()
             plt.plot(VGS_fit, ID_fit, label='fitted data')
             plt.legend()
             plt.grid()
+            plt.show()
         return Vt
-    
-        print("FIT VT0 is CURRENTLY NOT IMPLEMENTED")
 
-    def fit_Vts(self):
+    def fit_Vts(self, plot=True):
         # for now
-        self.Vt0 = self.get_Vt(vsb=0)
-        # eventually this should fit all VT parameters across voltages
+        # loop through VSBs, at one given VDS (max VDS, arbitrary)
+        vds = 0.1
+        mask_vds = (self.idvg_data[:, VDSID] == vds)
+        masked_array = self.idvg_data[mask_vds] # now only values at a given vds
+        # print(masked_array)
+        vsbs = np.unique(masked_array[:, VSBID])
+        # print(f"VSBS: {list(vsbs)}")
+        Vts = []
+        for vsb in vsbs:
+            Vts.append(self.fit_Vt(vsb=vsb, vds=vds))
+        if plot:
+            # show the Vts over Vsb
+            plt.figure()
+            plt.plot(vsbs, Vts, label="Vts")
+            plt.title("Vt over Vsb")
+            plt.xlabel("Vsb (V)")
+            plt.ylabel("Vt (V)")
+            plt.legend()
+            plt.show()
+
+        # now fit the variables to the Vt function
+        # guess
+        phi0 = 2*phiF + 5*phiT
+        print(f"Initial phi0 guess: {phi0} V")
+        # phi0 =
+        X_array = np.sqrt(phi0 + vsbs)
+        eps = 1e-12
+        phi0_min = -np.min(vsbs) + eps # ensure positive
+        # create function to minimize
+        def sse_for_phi0(phi0):
+            if np.any(phi0 + vsbs <= 0):    
+                return np.inf
+            x = np.sqrt(phi0 + vsbs)
+            X = np.column_stack([np.ones_like(x), x])
+            beta, *_ = np.linalg.lstsq(X, Vts, rcond=None)
+            resid = Vts - X @ beta
+            return np.sum(resid**2)
+        # use scipy minimize scalar to minimize the sum of squares error function
+        res = minimize_scalar(sse_for_phi0, bounds=(phi0_min, phi0_min + 1e6))
+        phi0_opt = res.x
+        self.phi0 = phi0_opt
+        # print(f"phi0* = {phi0_opt:.6g} V")
+        X_array = np.sqrt(phi0_opt + vsbs)
+        
+            
+        # find the slope of the line to get gamma
+        slope, intercept = np.polyfit(X_array, Vts, 1)
+        self.gamma = slope
+        # print(f"gamma: {gamma:.6g} V^0.5")
+        if plot:
+            plt.figure()
+            plt.plot(X_array, Vts, label = "VT Data")
+            plt.title("VTs vs sqrt(phi0 + VSBs)")
+            plt.xlabel("sqrt(phi0 + VSBs) (V^0.5)")
+            plt.ylabel("VTs (V)")
+            plt.grid()
+            plt.plot(X_array, intercept + slope * X_array, label=f"Fit: gamma = {self.gamma:.6g}")
+            plt.legend()
+            plt.show()
+        self.VFB = np.average(Vts - self.phi0 - self.gamma*X_array)
+        # print(f"VFB: {self.VFB:.6g} V")
+        plt.legend()
+
+    def get_Vt(self, Vsb):
+        """
+        Get the Vt based off of fit parameters
+        """
+        return self.VFB + self.phi0 + self.gamma*np.sqrt(self.phi0 + Vsb)
+
 
     def fit_all(self):
         """
@@ -181,16 +250,17 @@ class EKV_Model:
             raise ValueError("Fit Kappa before running model")
         if self.Is == None:
             raise ValueError("Fit Is before running model")
-        if self.Vt0 == None:
-            raise ValueError("Fit Vt0 before runnign model")
+        # if self.Vt0 == None:
+        #     raise ValueError("Fit Vt0 before runnign model")
         
         # forward current
-        IF = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - self.Vt0) - VSB)/(2*self.Ut)))**2
+        vt = self.get_Vt(VSB)
+        IF = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - vt) - VSB)/(2*self.Ut)))**2
         # reverse current
-        IR = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - self.Vt0) - VDB)/(2*self.Ut)))**2
+        IR = self.Is * np.log(1 + np.exp((self.Kappa*(VGB - vt) - VDB)/(2*self.Ut)))**2
         # sum
         ID = IF - IR
-        print(f"current {ID}")
+        # print(f"current {ID}")
         return ID
     
     def plot(self):

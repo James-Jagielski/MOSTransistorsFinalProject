@@ -22,5 +22,5 @@ mosfet.fit_all()
 
 
 
-# mosfet.plot()
+mosfet.plot()
 

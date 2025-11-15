@@ -44,8 +44,8 @@ class EKV_Model:
         """
         self.idvg_data = idvg_data
         self.idvd_data = idvd_data
-        self.Width = Width
-        self.Length = Length
+        self.W = Width
+        self.L = Length
         self.vds = None
         self.ids = None
         self.vgs = None
@@ -63,7 +63,7 @@ class EKV_Model:
         self.VFB = None
         self.tox = 10.5e-9
         self.e_ox = 3.45e-11
-        self.Ut = 0.02585 # ~ .026
+        self.Ut = phiT
         self.cox = 3.45e-11 / 10.5e-9 # eox/toc
     # generic fitting function
     def fit_parameter(self):
@@ -100,11 +100,12 @@ class EKV_Model:
         y_lin = ln_IDS[i_start:i_end]
 
         slope, intercept, r_value, _, _ = linregress(x_lin, y_lin)
-        self.Kappa = slope * self.Ut
-        self.Io = np.exp(intercept)
-        return self.Kappa, self.Io
+        Kappa = slope * self.Ut
+        # self.Io = np.exp(intercept)
+        Io = np.exp(intercept + Kappa * self.get_Vt(vsb_val) / self.Ut)
+        return Kappa, Io
     
-    def extract_all_kappas_IOs(self, plot=False):
+    def extract_all_kappas_IOs(self, plot=True):
         # Kappa should be fit for each curve
         kappas = []
         ios = []
@@ -123,10 +124,20 @@ class EKV_Model:
             plt.title("I0 against VSB")
             plt.xlabel("VSB")
             plt.show()
+
+        ## should change later
         self.Kappa = kappas[0]
-        self.Is = np.average(np.array(ios))
+        self.Is = ios[0]
         
-    def fit_Vt(self,vsb=0, vds=0.1,plot=True):
+
+    def fit_Is(self):
+        """
+        fitting Is and corresponding terms
+        """
+        self.u = 400
+        self.Is = 2*(self.W/self.L)*self.u*Cox*self.Ut**2 / self.Kappa
+        
+    def fit_Vt(self,vsb=0, vds=0.1,plot=False):
         # load data from VGS sweeps where VSB = -
         mask = (self.idvg_data[:, VSBID] == vsb) & (self.idvg_data[:, VDSID] == 0.1)
         VGS = self.idvg_data[:, VGSID][mask]
@@ -161,7 +172,7 @@ class EKV_Model:
             plt.show()
         return Vt
 
-    def fit_Vts(self, plot=True):
+    def fit_Vts(self, plot=False):
         # for now
         # loop through VSBs, at one given VDS (max VDS, arbitrary)
         vds = 0.1
@@ -238,8 +249,10 @@ class EKV_Model:
         Method to fit all parameters in order.
         """
         # generate kappas for each unique VSB
-        self.extract_all_kappas_IOs() # this creates self.kappas
         self.fit_Vts()
+        self.extract_all_kappas_IOs() # this creates self.kappas
+        # self.fit_Is()
+        
 
 
     def model(self, VGB, VSB, VDB):

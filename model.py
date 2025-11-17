@@ -374,5 +374,50 @@ class EKV_Model:
 
         plt.subplots_adjust(wspace=0.5, right=0.9)
         plt.show()
+    
+    def plot_kappa(self, plot=True):
+
+        # Extract arrays
+        vgs = self.idvg_data[:, VGSID]
+        ids = self.idvg_data[:, IDSID]
+        vsb_arr = self.idvg_data[:, VSBID]
+
+        kappas = []
+        ios = []
+
+        # Unique body-bias values
+        vsbs = np.unique(vsb_arr)
+
+        for vsb in vsbs:
+            kappa, io = self.extract_kappa_I0(vsb)
+            kappas.append(kappa)
+            ios.append(io)
+
+        if plot:
+            plt.figure()
+
+        for this_vsb in vsbs:
+            # Select rows for this VSB
+            mask = (vsb_arr == this_vsb)
+            vgs_sel = vgs[mask]
+            ids_sel = ids[mask]
+
+            # Extract kappa and I0 for this VSB
+            kappa, I0 = self.extract_kappa_I0(this_vsb)
+
+            # Compute fitted line: I = I0 * exp(kappa * Vgs / Ut)
+            fit_line = I0 * np.exp(kappa * vgs_sel / self.Ut)
+
+            if plot:
+                plt.semilogy(vgs_sel, ids_sel, '.', label=f"Measured VSB={this_vsb}")
+                plt.semilogy(vgs_sel, fit_line, '-', label=f"Fit VSB={this_vsb}")
+
+        if plot:
+            plt.title("IDS vs VGS with Kappa Fit")
+            plt.xlabel("VGS (V)")
+            plt.ylabel("IDS (A)")
+            plt.legend()
+            plt.grid(True, which="both")
+            plt.show()
 
 

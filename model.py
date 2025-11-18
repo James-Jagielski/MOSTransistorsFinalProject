@@ -68,10 +68,10 @@ class EKV_Model:
         self.phi0 = None
         self.gamma = None
         self.VFB = None
-        self.tox = 10.5e-9
-        self.e_ox = 3.45e-11
+        self.tox = tox
+        self.e_ox = Eox
         self.Ut = phiT
-        self.cox = 3.45e-11 / 10.5e-9 # eox/toc
+        self.cox = Cox # eox/toc
         self.vsat = 9e4 #6×10⁴ → 9×10⁴ m/s
         self.lambda_par = 0
     
@@ -133,18 +133,20 @@ class EKV_Model:
         # self.Is = ios[0]
         
 
-    def fit_Is(self, plot=True):
+    def fit_Is(self, plot=False):
         """
         fitting Is and corresponding terms
         """
         def Idsn(ueff, VGS, VSB, Vds):
-            vt = self.get_Vt(VSB)
+            vt = self.get_Vt(VSB, Vds)
             # IS prefactor: 2 * ueff * Cox * (W/L) * Ut^2 / Kappa
             IS = 2 * ueff * Cox * (self.W / self.L) * (self.Ut ** 2) / self.Kappa
             VDB = Vds + VSB
+            VGB = VGS + VSB
+            
             # softplus = ln(1 + exp(x)) implemented via log1p(exp(x))
-            argF = (self.Kappa * (VGS + VSB - vt) - VSB) / (2.0 * self.Ut)
-            argR = (self.Kappa * (VGS + VSB - vt) - (VDB)) / (2.0 * self.Ut)
+            argF = ((self.Kappa * (VGB - vt- VSB)) ) / (2.0 * self.Ut)
+            argR = ((self.Kappa * (VGB - vt- VDB)) ) / (2.0 * self.Ut)
 
             softF = np.log(1 + np.exp(argF))
             softR = np.log(1 + np.exp(argR))
@@ -174,7 +176,7 @@ class EKV_Model:
         mask = (self.idvg_data[:, VDSID ] == VDS) & (self.idvg_data[:, VSBID] == VSB)
         VGS = self.idvg_data[:, VGSID][mask]
         ID = self.idvg_data[:, IDSID][mask]
-        mask2 = (VGS > (filter := self.get_Vt(VSB)*1.5)) # only in nonsat strong inversion
+        mask2 = (VGS > (filter := self.get_Vt(VSB, VDS)*1.5)) # only in nonsat strong inversion
         VGS = VGS[mask2]
         ID = ID[mask2]
 
@@ -197,15 +199,15 @@ class EKV_Model:
 
 
         # now lets curve fit ueffs to get u0 and theta
-        def ueff_from_theta_u0(Vgs, Vsb, u0, theta):
+        def ueff_from_theta_u0(Vgs, Vsb, u0, theta, Vds):
             
-            Vt = self.get_Vt(Vsb)
+            Vt = self.get_Vt(Vsb, Vds)
             # print(Vgs - Vt)
             deltaV = (Vgs - Vt)
             # print(u0 / (1 + theta * deltaV))
             return u0 / (1 + theta * deltaV)
         
-        func = lambda vgs, u0, theta: ueff_from_theta_u0(vgs, 0.0, u0, theta)
+        func = lambda vgs, u0, theta: ueff_from_theta_u0(vgs, 0.0, u0, theta, VDS)
         popt, pcov = curve_fit(func, VGS, ueffs, p0=[0.05, 0.4])
         u0_opt, theta_opt = popt
         init_values = popt
@@ -228,14 +230,14 @@ class EKV_Model:
         if plot:
             plt.figure()
             plt.plot(VGS, ueffs, label="ueff data")
-            plt.plot(VGS, ueff_from_theta_u0(VGS, VSB, u0_opt, theta_opt), label="fit")
+            plt.plot(VGS, ueff_from_theta_u0(VGS, VSB, u0_opt, theta_opt, VDS), label="fit")
             plt.xlabel('VGS')
             plt.ylabel('ueff')
             plt.title("Fitting U0 and theta")
             plt.legend()
             plt.show()
 
-        vgsfilter = 3.6
+        vgsfilter = 3.5
         vdsfilter = 0.1 # lets keep this in linear region
         ############# thetaB calculations #######################
         vsbs = np.unique(self.idvg_data[:, VSBID])
@@ -265,10 +267,10 @@ class EKV_Model:
             ueffs.append(get_ueff(id, vgsfilter, vsb, vdsfilter))
 
         # now lets curve fit ueffs to get u0 and theta
-        def ueff_from_thetaB(Vgs, Vsb, u0, theta, thetaB):
-            return self.u0 / (1 + (self.theta * (Vgs - self.get_Vt(Vsb))) + (thetaB*Vsb))
+        def ueff_from_thetaB(Vgs, Vsb, u0, theta, thetaB, Vds):
+            return self.u0 / (1 + (self.theta * (Vgs - self.get_Vt(Vsb, Vds))) + (thetaB*Vsb))
         
-        func = lambda Vsb, thetaB: ueff_from_thetaB(vgsfilter, Vsb, self.u0, self.theta, thetaB)
+        func = lambda Vsb, thetaB: ueff_from_thetaB(vgsfilter, Vsb, self.u0, self.theta, thetaB, vdsfilter)
         # print(len(vsbs), len(ueffs))
         # print(ueffs)
         popt, pcov = curve_fit(func, vsbs, ueffs, bounds=([-100], [100]))
@@ -276,8 +278,7 @@ class EKV_Model:
         print(thetaB)
         print(f"thetaB*: {thetaB:.6g} V^-1")
 
-        self.thetaB = thetaB
-        # self.thetaB=  0 #######################################
+        self.thetaB = thetaB 
         
         ## PLOT TO CHECK
         if plot:
@@ -295,41 +296,99 @@ class EKV_Model:
 
     def fit_Vt(self,vsb=0, vds=0.1,plot=False):
         # load data from VGS sweeps where VSB = -
+        # mask = (self.idvg_data[:, VSBID] == vsb) & (self.idvg_data[:, VDSID] == vds)
+        # VGS = self.idvg_data[:, VGSID][mask]
+        # ID = self.idvg_data[:, IDSID][mask]
+        # # take data close to intercept
+        # # print(vsb)
+        # # print(ID)
+        # maxID = max(ID)
+        # minID = min(ID)
+        # diff = maxID - minID
+
+        # mask = (ID > 0.1*diff + minID) & (ID < 0.2*diff + minID)
+        # VGS_fit = VGS[mask]
+        # ID_fit = ID[mask]
+        # # linearize this line
+        # slope, intercept = np.polyfit(VGS_fit, ID_fit, 1)
+        # VGS_fit = np.linspace(0, 2.5, 100)
+        # ID_fit = slope * VGS_fit + intercept
+        # # print(f"slope: {slope}, intercept: {intercept}")
+        # # find index where ID = 0
+        # Vt = -intercept / slope
+
+        # if plot:
+        #     plt.figure()
+        #     plt.title(f"Vt Extrapolation for VSB = {vsb}")
+        #     plt.plot(VGS, ID, label="data")
+        #     plt.axvline(Vt, label="Vt0", color='red')
+        #     plt.plot()
+        #     plt.plot(VGS_fit, ID_fit, label='fitted data')
+        #     plt.legend()
+        #     plt.grid()
+        #     plt.show()
+
+        """
+        Extract Vt using maximum transconductance method
+        """
         mask = (self.idvg_data[:, VSBID] == vsb) & (self.idvg_data[:, VDSID] == vds)
         VGS = self.idvg_data[:, VGSID][mask]
         ID = self.idvg_data[:, IDSID][mask]
-        # take data close to intercept
-        # print(vsb)
-        # print(ID)
-        maxID = max(ID)
-        minID = min(ID)
-        diff = maxID - minID
-
-        mask = (ID > 0.05*diff + minID) & (ID < 0.3*diff + minID)
-        VGS_fit = VGS[mask]
-        ID_fit = ID[mask]
-        # linearize this line
+        
+        # Sort by VGS
+        sort_idx = np.argsort(VGS)
+        VGS = VGS[sort_idx]
+        ID = ID[sort_idx]
+        
+        # Calculate transconductance gm = dID/dVGS
+        gm = np.gradient(ID, VGS)
+        
+        # Find index of maximum gm
+        idx_max_gm = np.argmax(gm)
+        
+        # Use points around max gm for linear fit (±3 points)
+        window = 3
+        start_idx = max(0, idx_max_gm - window)
+        end_idx = min(len(VGS), idx_max_gm + window + 1)
+        
+        VGS_fit = VGS[start_idx:end_idx]
+        ID_fit = ID[start_idx:end_idx]
+        
+        # Linear fit
         slope, intercept = np.polyfit(VGS_fit, ID_fit, 1)
-        VGS_fit = np.linspace(0, 2.5, 100)
-        ID_fit = slope * VGS_fit + intercept
-        # print(f"slope: {slope}, intercept: {intercept}")
-        # find index where ID = 0
-        idx = np.where(ID_fit >= 0)[0][0]
+        
+        # Extrapolate to ID = 0
         Vt = -intercept / slope
-
+        
         if plot:
             plt.figure()
-            plt.title(f"Vt Extrapolation for VSB = {vsb}")
-            plt.plot(VGS, ID, label="data")
-            plt.axvline(Vt, label="Vt0", color='red')
-            plt.plot()
-            plt.plot(VGS_fit, ID_fit, label='fitted data')
+            plt.subplot(2, 1, 1)
+            plt.plot(VGS, ID, 'b-', label='Data')
+            plt.axvline(Vt, color='r', linestyle='--', label=f'Vt = {Vt:.3f}V')
+            plt.axvline(VGS[idx_max_gm], color='g', linestyle='--', label='Max gm point')
+            
+            # Plot extrapolation line
+            VGS_line = np.linspace(Vt, VGS_fit[-1], 100)
+            ID_line = slope * VGS_line + intercept
+            plt.plot(VGS_line, ID_line, 'r--', alpha=0.5, label='Extrapolation')
+            plt.xlabel('VGS (V)')
+            plt.ylabel('ID (A)')
+            plt.title(f'Vt Extraction (VSB={vsb}V, VDS={vds}V)')
             plt.legend()
-            plt.grid()
+            plt.grid(True)
+            
+            plt.subplot(2, 1, 2)
+            plt.plot(VGS, gm, 'g-')
+            plt.axvline(VGS[idx_max_gm], color='r', linestyle='--')
+            plt.xlabel('VGS (V)')
+            plt.ylabel('gm (S)')
+            plt.title('Transconductance')
+            plt.grid(True)
+            plt.tight_layout()
             plt.show()
         return Vt
 
-    def fit_Vts(self, plot=False):
+    def fit_Vts(self, plot=True):
         # for now
         # loop through VSBs, at one given VDS (max VDS, arbitrary)
         # vds = 0.
@@ -355,17 +414,25 @@ class EKV_Model:
                 plt.legend()
                 
             vts_mat.append(Vts)
+        Vts = vts_mat[-1]
         if plot:
             plt.show()
         # check the scaling factor in between VTs
         dibls = []
-        voltage_diff = abs(Vdss[0] - Vdss[1])
-        # print(vts_mat)
-        for vt1, vt2 in zip(vts_mat[0], vts_mat[1]):
-            diff = vt1 - vt2
-            dibls.append(diff / voltage_diff)
+        voltage_diff = Vdss[0] - Vdss[1]  # Should be positive (3.3 - 0.1 = 3.2)
+        for vt_high_vds, vt_low_vds in zip(vts_mat[0], vts_mat[1]):
+            # Vt typically decreases with increasing VDS
+            # DIBL = -(Vt_high - Vt_low) / (VDS_high - VDS_low)
+            dibl = -(vt_high_vds - vt_low_vds) / voltage_diff
+            dibls.append(dibl)
+
+        # self.dibl = -np.average(dibls)
+        self.dibl = dibls[0]
+        # self.dibl = 0
+        self.vds_ref = Vdss[1]
 
         if plot:
+            print("DIBLS: ", end='')
             print(dibls)
             # we have concluded there is no DIBL effect
 
@@ -391,13 +458,13 @@ class EKV_Model:
         phi0_opt = res.x
         self.phi0 = phi0_opt
         # print(f"phi0* = {phi0_opt:.6g} V")
-        X_array = np.sqrt(phi0_opt + vsbs)
+        X_array = np.sqrt(self.phi0 + vsbs)
         
             
         # find the slope of the line to get gamma
         slope, intercept = np.polyfit(X_array, Vts, 1)
         self.gamma = slope
-        # print(f"gamma: {gamma:.6g} V^0.5")
+        print(f"gamma: {self.gamma:.6g} V^0.5")
         if plot:
             plt.figure()
             plt.plot(X_array, Vts, label = "VT Data")
@@ -408,21 +475,36 @@ class EKV_Model:
             plt.plot(X_array, intercept + slope * X_array, label=f"Fit: gamma = {self.gamma:.6g}")
             plt.legend()
             plt.show()
-            
-        self.VFB = np.average(Vts - self.phi0 - self.gamma*X_array)
+        
+        VFBs = Vts - self.phi0 - self.gamma*X_array
+        # plt.figure()
+        # plt.plot(vsbs, VFBs)
+        # plt.title("VFBs (checking consistent)")
+        # plt.show()
+        
+        self.VFB = np.average(VFBs)
         if plot:
             plt.figure()
-            plt.plot(vsbs, Vts, label="Vts")
-            plt.plot(vsbs, self.get_Vt(vsbs), label='fit')
+            plt.plot(vsbs, Vts, label="Vts", lw=5.0)
+            plt.plot(vsbs, self.get_Vt(vsbs, Vdss[1]), label='fit')
+            plt.title("Fit VTs against reference VTs")
+            plt.figure()
             plt.show()
             
         # print(f"VFB: {self.VFB:.6g} V")
 
-    def get_Vt(self, Vsb):
+    def get_Vt(self, Vsb, Vds):
         """
         Get the Vt based off of fit parameters
         """
-        return self.VFB + self.phi0 + self.gamma*np.sqrt(self.phi0 + Vsb)
+        # self.gamma = 0
+        # Vt_base = self.VFB + self.phi0 + self.gamma*(np.sqrt(self.phi0 + Vsb))
+        # Vt = Vt_base - self.dibl*(Vds - self.vds_ref)
+        
+        vt0 = self.VFB + self.phi0 + self.gamma*np.sqrt(self.phi0)
+        Vt = vt0 + self.gamma*(np.sqrt(self.phi0 + Vsb) - np.sqrt(self.phi0))
+        
+        return Vt
 
     def VDSsat_EKV(self, Isat, Is, A=0.8):
         """
@@ -442,12 +524,14 @@ class EKV_Model:
         """
         # generate kappas for each unique VSB
         self.fit_Vts()
-        print(self.gamma)
+        # print(self.gamma)
+         # After fitting gamma in fit_Vts():
+        gamma_theoretical = np.sqrt(2 * q * Es * Na) / Cox
         self.extract_all_kappas_IOs() # this creates self.kappas
         self.fit_Is()
         
-    def get_ueff(self, Vgs, Vsb):
-        return self.u0 / (1 + (self.theta * (Vgs - self.get_Vt(Vsb))) + (self.thetaB*Vsb))
+    def get_ueff(self, Vgs, Vsb, Vds):
+        return self.u0 / (1 + (self.theta * (Vgs- self.get_Vt(Vsb, Vds))) + (self.thetaB*Vsb))
 
     def model(self, VGB, VSB, VDB):
         """
@@ -462,16 +546,16 @@ class EKV_Model:
         Vgs = VGB - VSB
         Vds = VDB - VSB
 
-        vt = self.get_Vt(VSB)
-        ueff = self.get_ueff(Vgs, VSB)   # pass Vgs rather than VGB+VSB
+        vt = self.get_Vt(VSB, VDB - VSB)
+        ueff = self.get_ueff(Vgs, VSB, VDB - VSB)   # pass Vgs rather than VGB+VSB
 
         # IS prefactor: 2 * ueff * Cox * (W/L) * Ut^2 / Kappa
         IS = 2 * ueff * Cox * (self.W / self.L) * (self.Ut ** 2) / self.Kappa
         IS *= (1 + self.lambda_par*(Vds))
 
         # softplus = ln(1 + exp(x)) implemented via log1p(exp(x))
-        argF = ((self.Kappa * (VGB - vt)) - VSB) / (2.0 * self.Ut)
-        argR = ((self.Kappa * (VGB - vt)) - VDB) / (2.0 * self.Ut)
+        argF = ((self.Kappa * (VGB - vt- VSB)) ) / (2.0 * self.Ut)
+        argR = ((self.Kappa * (VGB - vt- VDB)) ) / (2.0 * self.Ut)
 
         softF = np.log(1 + np.exp(argF))
         softR = np.log(1 + np.exp(argR))
@@ -514,7 +598,8 @@ class EKV_Model:
                             vds_array,
                             self.model(vgs + vsb, vsb, vdb_array),
                             label=f"VGS: {vgs}"
-                    )
+                        )
+                        
                     if reference:
                         axs[0, i].plot(
                             self.idvd_data[mask][:, VDSID],
@@ -551,6 +636,7 @@ class EKV_Model:
                             self.model(vgb_array, vsb, vds + vsb),
                             label=f"VSB: {vsb}"
                         )
+                    # axs[1, i].axvline(self.get_Vt(vsb, 0))
                     if reference:
                         axs[1, i].plot(
                             self.idvg_data[mask][:, VGSID],

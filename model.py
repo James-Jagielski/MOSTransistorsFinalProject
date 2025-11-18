@@ -1062,3 +1062,80 @@ class EKV_Model:
         plt.axhline(1, linestyle="--")
         plt.axhline(2*np.sqrt(np.e) - 2, linestyle='--')
         plt.show()
+
+    def Gummel_symmetry_test(self, Vx_vals, VDS=0.5, VSB=0.0):
+        """
+        Gummel symmetry test:
+        Computes Ix, dIx/dVx, and d^2Ix/dVx^2 vs Vx to visualize symmetry.
+        """
+        Vx_vals = np.array(Vx_vals)
+        Ix_pos = np.array([self.model(Vx, VSB, VDS-VSB) for Vx in Vx_vals])
+        Ix_neg = np.array([self.model(-Vx, VSB, VDS-VSB) for Vx in Vx_vals])
+        Ix = Ix_pos - Ix_neg
+        dIx = np.gradient(Ix, Vx_vals)
+        d2Ix = np.gradient(dIx, Vx_vals)
+
+        plt.figure(figsize=(8,6))
+        plt.plot(Vx_vals, Ix, label='Ix')
+        plt.figure(figsize=(8,6))
+        plt.plot(Vx_vals, dIx, label='dIx/dVx')
+        plt.figure(figsize=(8,6))
+        plt.plot(Vx_vals, d2Ix, label='d²Ix/dVx²')
+        plt.xlabel("Vx (V)")
+        plt.ylabel("Current / Derivatives")
+        plt.title("Gummel Symmetry Test")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+        return Ix, dIx, d2Ix
+
+
+    def gm_over_ID_sweep(self, VSB_vals=[0.0], VGS_min=0, VGS_max=1.5, n_points=1000, VDS=0.05):
+        """
+        Sweep VGS finely from weak to strong inversion and plot gm/ID curves.
+        """
+        VGS_vals = np.linspace(VGS_min, VGS_max, n_points)
+
+        plt.figure(figsize=(8,6))
+        for VSB in VSB_vals:
+            IDS = np.array([self.model(VGS, VSB, VDS) for VGS in VGS_vals])
+            gm = np.gradient(IDS, VGS_vals)
+            gm_over_ID = gm / (IDS + 1e-30) 
+            plt.semilogx(IDS, gm_over_ID, label=f"VSB={VSB:.2f} V", alpha=0.8)
+
+        plt.xlabel("IDS (A)")
+        plt.ylabel("gm / IDS (1/V)")
+        plt.title("Transconductance efficiency gm/ID vs IDS")
+        plt.grid(True, which="both")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+        return VGS_vals, IDS, gm, gm_over_ID
+
+
+    def Conductance_tests(self, VSB=0.0, VDS=0.5, VGS_min=0.2, VGS_max=1.2, n_points=500):
+        """
+        Compute and plot gm/ID vs IDS for a single VSB and VDS.
+        """
+        VGS_vals = np.linspace(VGS_min, VGS_max, n_points)
+        IDS = np.array([self.model(vgs, VSB, VDS) for vgs in VGS_vals])
+        gm = np.gradient(IDS, VGS_vals)
+        gm_over_ID = gm / (IDS + 1e-30)
+
+        mask = IDS > 1e-12
+        plt.figure(figsize=(7,5))
+        plt.semilogx(IDS[mask], gm_over_ID[mask], label='gm/ID')
+        plt.xlabel("IDS (A)")
+        plt.ylabel("gm / ID (1/V)")
+        plt.title(f"Transconductance efficiency gm/ID vs IDS at VDS={VDS} V, VSB={VSB} V")
+        plt.grid(True, which="both")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+        return VGS_vals, IDS, gm, gm_over_ID
+
+        

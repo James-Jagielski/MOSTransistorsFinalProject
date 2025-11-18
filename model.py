@@ -74,6 +74,11 @@ class EKV_Model:
         self.cox = Cox # eox/toc
         self.vsat = 9e4 #6×10⁴ → 9×10⁴ m/s
         self.lambda_par = 0
+        self.vsat = np.inf
+        self.scale = 0
+        self.l_vgs = 0
+        self.l_vsb = 0
+        self.l_vsb2 = 0
     
     # kappa and Io extraction
     def extract_kappa_I0(self, vsb_val, window_size=7):
@@ -526,12 +531,194 @@ class EKV_Model:
         self.fit_Vts()
         # print(self.gamma)
          # After fitting gamma in fit_Vts():
-        gamma_theoretical = np.sqrt(2 * q * Es * Na) / Cox
         self.extract_all_kappas_IOs() # this creates self.kappas
         self.fit_Is()
+        for i in range(50):
+            self.fit_Vsat()
+            self.fit_lambdas()
+            
+
+        
+        # self.fit_lambda()
+        
         
     def get_ueff(self, Vgs, Vsb, Vds):
         return self.u0 / (1 + (self.theta * (Vgs- self.get_Vt(Vsb, Vds))) + (self.thetaB*Vsb))
+    
+    def lambda_model(self, VGB, VSB, VDB):
+        Vgs = VGB - VSB
+        Vds = VDB - VSB
+        # self.vsat = 1e6
+        vt = self.get_Vt(VSB, VDB - VSB)
+        ueff = self.get_ueff(Vgs, VSB, VDB - VSB)   # pass Vgs rather than VGB+VSB
+        E = Vds / self.L
+        ueff = ueff / (1 + ueff*E / self.vsat)
+        ueff = ueff * (1 + self.lambda_par*Vds)
+
+        # IS prefactor: 2 * ueff * Cox * (W/L) * Ut^2 / Kappa
+        IS = 2 * ueff * Cox * (self.W / self.L) * (self.Ut ** 2) / self.Kappa
+        IS *= (1 + self.lambda_par*(Vds))
+
+        # softplus = ln(1 + exp(x)) implemented via log1p(exp(x))
+        argF = ((self.Kappa * (VGB - vt- VSB)) ) / (2.0 * self.Ut)
+        argR = ((self.Kappa * (VGB - vt- VDB)) ) / (2.0 * self.Ut)
+
+        softF = np.log(1 + np.exp(argF))
+        softR = np.log(1 + np.exp(argR))
+
+        IF = IS * (softF ** 2)
+        IR = IS * (softR ** 2)
+
+        Isat = np.max(IF)
+
+        VDSsat = self.VDSsat_EKV(Isat, IS, A=0.8)
+        IF_sat = IF / (1 + IF * Vds / VDSsat)
+        IR_sat = IR / (1 + IR * Vds / VDSsat)
+        I_EKV = IF_sat - IR_sat
+        return I_EKV
+
+    def fit_Vsat(self):
+        # fit Vsat
+        # this is the last thing we need to fit, so we just need to find the vsat that minimizes total error in a curve
+        vgs = 3.4
+        vsb = 0
+        mask = self.idvd_data[:, VGSID] == vgs
+        mask2 = self.idvd_data[:, VSBID] == vsb
+        mask = mask & mask2
+        ID = self.idvd_data[:, IDSID][mask]
+        VDS = self.idvd_data[:, VDSID][mask]
+        print(ID)
+        print(VDS)
+        def fit_func(VDS, vsat):
+            self.vsat = vsat
+            id = self.model(vgs + vsb, vsb, VDS + vsb)
+            return id
+        
+        popt, pcov = curve_fit(fit_func, VDS, ID, p0=[1e7])
+
+        self.vsat = popt[0]
+        print(self.vsat)
+        
+    def fit_lambda(self, vgs, vsb):
+        mask = self.idvd_data[:, VGSID] == vgs
+        mask2 = self.idvd_data[:, VSBID] == vsb
+        mask = mask & mask2
+        ID = self.idvd_data[:, IDSID][mask]
+        VDS = self.idvd_data[:, VDSID][mask]
+
+        def fit_func(VDS, lambda_par):
+            self.lambda_par = lambda_par
+            id = self.lambda_model(vgs + vsb, vsb, VDS + vsb)
+            return id
+
+        popt, pcov = curve_fit(fit_func, VDS, ID, p0=[0.1], bounds=[0, np.inf])
+
+        self.lambda_par = popt[0]
+        print(self.lambda_par)
+        return self.lambda_par
+
+    def fit_lambdas(self, plot=False):
+        power = 2
+        unique_vgss = np.unique(self.idvd_data[:, VGSID])
+        unique_vsbs = np.unique(self.idvd_data[:, VSBID])
+        vds_vals = self.idvd_data[:, VDSID]
+
+        ls_results = []
+        float_tol=1e-8
+        if plot:
+            plt.figure()
+            plt.xlabel("VGS")
+            plt.ylabel("lambda")
+            plt.grid(True)
+
+        for vsb in unique_vsbs:
+            # use isclose for float comparisons
+            mask_vsb = np.isclose(self.idvd_data[:, VSBID], vsb, atol=float_tol)
+            vg_list = []
+            lambda_list = []
+
+            for vgs in unique_vgss:
+                mask_vgs = np.isclose(self.idvd_data[:, VGSID], vgs, atol=float_tol)
+                mask = mask_vgs & mask_vsb
+
+                # check we have multiple VDS points for this (vgs, vsb) sweep
+                if np.count_nonzero(mask) > 1:
+                    try:
+                        l_val = self.fit_lambda(vgs, vsb)
+                    except Exception:
+                        # skip if fit_lambda fails for this point
+                        continue
+                    if l_val is None:
+                        continue
+                    vg_list.append(vgs)
+                    lambda_list.append(l_val)
+
+            # store results for this VSB
+            ls_results.append({"vsb": float(vsb), "vgs": np.array(vg_list), "lambda": np.array(lambda_list)})
+
+            # plot if requested and there is data
+            if plot and len(vg_list) > 0:
+                plt.plot(vg_list, lambda_list, marker='o', label=f"VSB={vsb}")
+
+        if plot:
+            plt.legend()
+            plt.show()
+
+        def fit_func_no_vsb(VGS, l_vsb, scale):
+            return scale / (1 + (VGS**power)*l_vsb)
+        
+        # curve fit
+        print(vg_list)
+        print(ls_results[0]['lambda'])
+        popt, pcov = curve_fit(fit_func_no_vsb, vg_list, ls_results[0]['lambda'], p0 = [1000000, 1000000])
+
+        l_vgs = popt[0]
+        scale = popt[1]
+
+        self.l_vgs = l_vgs
+        self.scale = scale
+
+        fit_vals = []
+        for vg in vg_list:
+            fit_vals.append(fit_func_no_vsb(vg, l_vgs, scale))
+
+        if plot:
+            plt.figure()
+            print(scale)
+            print(l_vgs)
+            plt.plot(vg_list, ls_results[0]['lambda'], marker='o', label=f"VSB={0}")
+            plt.plot(vg_list, fit_vals, label='fit')
+            plt.legend()
+            plt.show()
+
+        
+        def fit_func_vsb(VGS, l_vsb, l_vsb2):
+            VSB = 3.0
+            return (scale* (1+l_vsb*VSB)) / (1 + (VGS**power)*l_vgs + l_vsb2*VSB)
+    
+        popt, pcov = curve_fit(fit_func_vsb, vg_list, ls_results[1]['lambda'])
+
+        l_vsb = popt[0]
+        l_vsb2 = popt[1]
+        print(l_vsb)
+        self.l_vsb = l_vsb
+        self.l_vsb2 = l_vsb2
+        fit_vals = []
+        for vg in vg_list:
+            fit_vals.append(fit_func_vsb(vg, l_vsb, l_vsb2))
+        if plot:
+            plt.figure()
+            print(scale)
+            print(l_vgs)
+            plt.plot(vg_list, ls_results[1]['lambda'], marker='o', label=f"VSB={3.0}")
+            plt.plot(vg_list, fit_vals, label='fit')
+            plt.legend()
+            plt.show()
+        
+
+    def get_lambda(self, vgs, vsb):
+        return (self.scale* (1+self.l_vsb*vsb)) / (1 + (vgs**2)*self.l_vgs + self.l_vsb2*vsb)
+
 
     def model(self, VGB, VSB, VDB):
         """
@@ -545,9 +732,13 @@ class EKV_Model:
         # self.thetaB = 0 # CHANGE THIS LATER
         Vgs = VGB - VSB
         Vds = VDB - VSB
-
+        # self.vsat = 1e6
         vt = self.get_Vt(VSB, VDB - VSB)
         ueff = self.get_ueff(Vgs, VSB, VDB - VSB)   # pass Vgs rather than VGB+VSB
+        E = Vds / self.L
+        ueff = ueff / (1 + ueff*E / self.vsat)
+        lam = self.get_lambda(Vgs, VSB)
+        ueff = ueff * (1 + lam*Vds)
 
         # IS prefactor: 2 * ueff * Cox * (W/L) * Ut^2 / Kappa
         IS = 2 * ueff * Cox * (self.W / self.L) * (self.Ut ** 2) / self.Kappa

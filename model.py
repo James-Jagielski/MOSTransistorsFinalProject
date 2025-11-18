@@ -571,6 +571,34 @@ class EKV_Model:
         I_EKV = IF_sat - IR_sat
         return I_EKV
     
+    def compute_error(self, I_ref, I_model, weights=None, eps=1e-12, rel_floor_factor=1e-8):
+        I_ref = np.asarray(I_ref, dtype=float)
+        I_model = np.asarray(I_model, dtype=float)
+        if I_ref.shape != I_model.shape:
+            raise ValueError("I_ref and I_model must have same shape")
+
+        K = I_ref.size
+        if K == 0:
+            return 0.0, 0.0
+
+        if weights is None:
+            weights = np.ones_like(I_ref, dtype=float)
+        else:
+            weights = np.asarray(weights, dtype=float)
+            if weights.shape != I_ref.shape:
+                raise ValueError("weights must match I_ref shape")
+
+        # robust denominator: use max(|I_ref|, rel_floor, eps)
+        rel_floor = np.maximum(np.max(np.abs(I_ref)) * rel_floor_factor, eps)
+        denom = np.maximum(np.abs(I_ref), rel_floor)
+
+        rel = (I_model - I_ref) / denom
+        # replace any non-finite rel with large finite number (or drop those points)
+        rel = np.where(np.isfinite(rel), rel, 0.0)   # alternative: raise or drop
+        E_I = float(np.sum(weights * rel**2))
+        E_rms = float(np.sqrt(E_I / float(K)))
+        return E_rms
+    
     def plot(self, reference=True, model=True):
         """
         Plots model data against reference data
@@ -596,7 +624,7 @@ class EKV_Model:
                     if model:
                         axs[0, i].plot(
                             vds_array,
-                            self.model(vgs + vsb, vsb, vdb_array),
+                            (self.model(vgs + vsb, vsb, vdb_array)),
                             label=f"VGS: {vgs}"
                         )
                         
@@ -607,6 +635,13 @@ class EKV_Model:
                             label=f"Ref VGS: {vgs}",
                             linestyle = '--'
                         )
+
+                    Vds_points = self.idvd_data[mask][:, VDSID]
+                    Iref_points = self.idvd_data[mask][:, IDSID]
+                    # pass Vds + vsb (body-referenced Vds) to the model
+                    Imodel = self.model(vgs + vsb, vsb, Vds_points + vsb)
+                    E_rms = self.compute_error(Iref_points, Imodel)
+                    print(f"ID/VDS Error vgs={vgs}, vsb={vsb}: E_rms={E_rms:.6e}")
                     
             axs[0, i].legend(
                 loc="center left",
@@ -644,6 +679,13 @@ class EKV_Model:
                             label=f"Ref VDS: {vds}",
                             linestyle = '--'
                         )
+                    
+                    Vgs_points = self.idvg_data[mask][:, VGSID]
+                    Iref_points = self.idvg_data[mask][:, IDSID]
+                    # pass Vds + vsb (body-referenced Vds) to the model
+                    Imodel = self.model(Vgs_points + vsb, vsb, vds + vsb)
+                    E_rms = self.compute_error(Iref_points, Imodel)
+                    print(f"ID/VGS Error vds={vds}, vsb={vsb}: E_rms={E_rms:.6e}")
                     
             axs[1, i].legend(
                 loc="center left",
@@ -747,6 +789,15 @@ class EKV_Model:
                             linestyle='--',
                             label=f"Ref VGS: {vgs}"
                         )
+
+                    Vds_points = self.idvd_data[mask][:, VDSID]
+                    Iref_points = np.gradient(self.idvd_data[mask][:, IDSID], Vds_points)
+                    # pass Vds + vsb (body-referenced Vds) to the model
+                    Imodel = self.model(vgs + vsb, vsb, Vds_points + vsb)
+                    Imodel = np.gradient(Imodel, Vds_points)
+                    E_rms = self.compute_error(Iref_points, Imodel)
+                    print(f"dID/dVDS Error vgs={vgs}, vsb={vsb}: E_rms={E_rms:.6e}")
+
             axs[0, i].legend(
                 loc="center left",
                 bbox_to_anchor=(1.02, 0.5),
@@ -794,6 +845,14 @@ class EKV_Model:
                             linestyle='--',
                             label=f"Ref VSB: {vsb}"
                         )
+                    
+                    Vgs_points = self.idvg_data[mask][:, VGSID]
+                    Iref_points = np.gradient(self.idvg_data[mask][:, IDSID], Vgs_points)
+                    # pass Vds + vsb (body-referenced Vds) to the model
+                    Imodel = self.model(Vgs_points + vsb, vsb, vds + vsb)
+                    Imodel = np.gradient(Imodel, Vgs_points)
+                    E_rms = self.compute_error(Iref_points, Imodel)
+                    print(f"dID/dVGS Error vds={vds}, vsb={vsb}: E_rms={E_rms:.6e}")
 
                     
 

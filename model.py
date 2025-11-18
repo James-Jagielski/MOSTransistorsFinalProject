@@ -388,7 +388,7 @@ class EKV_Model:
             plt.show()
         return Vt
 
-    def fit_Vts(self, plot=True):
+    def fit_Vts(self, plot=False):
         # for now
         # loop through VSBs, at one given VDS (max VDS, arbitrary)
         # vds = 0.
@@ -864,4 +864,36 @@ class EKV_Model:
             axs[1, i].set_title(f"dIDS/dVGS for VDS = {vds}")
 
         plt.subplots_adjust(wspace=0.5, right=0.9)
+        plt.show()
+
+    def Gummel_Slope_Ratio(self):
+        """
+        test K1 as requested, plots ID/VDS / dID/dVDS
+        """
+
+        # for may VGS, find ID/VDS / dId / dVds
+        VSB = 0
+        VGS = np.linspace(0, 2.5, 1000)
+        VDS = np.linspace(0, 1, 300)
+        vds_target = 0.5*phiT
+        index = np.argmin(np.abs(VDS - vds_target))
+        vds_target = VDS[index]
+
+        Srs = []
+        for vgs in VGS:
+            IDS = self.model(vgs + VSB, VSB, VDS + VSB)
+            mask = (VDS== vds_target)
+            ratio = IDS[mask] / vds_target
+            dIddVds = np.gradient(IDS, VDS)
+            derivative = dIddVds[mask]
+            Sr = ratio / derivative
+            Srs.append(Sr)
+            # print(Sr)
+        Srs = np.array(Srs)
+        
+        plt.figure()
+        plt.plot(VGS, Srs)
+        plt.title("Gummel Slope Ratio Test")
+        plt.axhline(1, linestyle="--")
+        plt.axhline(2*np.sqrt(np.e) - 2, linestyle='--')
         plt.show()

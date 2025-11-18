@@ -479,6 +479,17 @@ class EKV_Model:
         """
         return self.VFB + self.phi0 + self.gamma*np.sqrt(self.phi0 + Vsb)
 
+    def VDSsat_EKV(self, Isat, Is, A=0.8):
+        """
+        EKV formula for VDSsat
+        Isat : measured or model IDS at saturation
+        Is : EKV scale current (self.Is)
+        A : fitting constant
+        """
+        term1 = 2 * self.Ut * np.log(np.exp(np.sqrt(Isat / Is)) - 1)
+        term2 = 2 * self.Ut * np.log(np.exp(np.sqrt(Isat / (A * Is))) - 1)
+        return term1 - term2
+
 
     def fit_all(self):
         """
@@ -525,8 +536,13 @@ class EKV_Model:
         IF = IS * (softF ** 2)
         IR = IS * (softR ** 2)
 
-        ID = IF - IR
-        return ID
+        Isat = np.max(IF)
+
+        VDSsat = self.VDSsat_EKV(Isat, IS, A=0.8)
+        IF_sat = IF / (1 + IF * Vds / VDSsat)
+        IR_sat = IR / (1 + IR * Vds / VDSsat)
+        I_EKV = IF_sat - IR_sat
+        return I_EKV
     
     def plot(self, reference=True, model=True):
         """

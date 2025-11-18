@@ -550,13 +550,6 @@ class EKV_Model:
                 mask = mask_vgs & mask_vsb
                 ##### plot reference data
                 if len(self.idvd_data[mask][:, IDSID]) > 0:
-                    if reference:
-                        axs[0, i].plot(
-                            self.idvd_data[mask][:, VDSID],
-                            self.idvd_data[mask][:, IDSID],
-                            label=f"Ref VGS: {vgs}",
-                            linestyle = '--'
-                        )
                     ###### plot model data
                     if model:
                         axs[0, i].plot(
@@ -564,11 +557,19 @@ class EKV_Model:
                             self.model(vgs + vsb, vsb, vdb_array),
                             label=f"VGS: {vgs}"
                     )
-            # axs[0, i].legend(
-            #     loc="center left",
-            #     bbox_to_anchor=(1.02, 0.5),
-            #     borderaxespad=0,
-            # )
+                    if reference:
+                        axs[0, i].plot(
+                            self.idvd_data[mask][:, VDSID],
+                            self.idvd_data[mask][:, IDSID],
+                            label=f"Ref VGS: {vgs}",
+                            linestyle = '--'
+                        )
+                    
+            axs[0, i].legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0,
+            )
             axs[0, i].set_title(f"IDS / VDS Curves for VSB = {vsb}")
 
         ############# PLOTTING ID VGS ###################
@@ -585,13 +586,6 @@ class EKV_Model:
                 mask_vsb = self.idvg_data[:, VSBID] == vsb
                 mask = mask_vds & mask_vsb
                 if len(self.idvg_data[mask][:, IDSID]) > 0:
-                    if reference:
-                        axs[1, i].plot(
-                            self.idvg_data[mask][:, VGSID],
-                            self.idvg_data[mask][:, IDSID],
-                            label=f"Ref VDS: {vds}",
-                            linestyle = '--'
-                        )
                     ### model data ######
                     if model:
                         axs[1, i].plot(
@@ -599,6 +593,14 @@ class EKV_Model:
                             self.model(vgb_array, vsb, vds + vsb),
                             label=f"VSB: {vsb}"
                         )
+                    if reference:
+                        axs[1, i].plot(
+                            self.idvg_data[mask][:, VGSID],
+                            self.idvg_data[mask][:, IDSID],
+                            label=f"Ref VDS: {vds}",
+                            linestyle = '--'
+                        )
+                    
             axs[1, i].legend(
                 loc="center left",
                 bbox_to_anchor=(1.02, 0.5),
@@ -655,3 +657,108 @@ class EKV_Model:
             plt.show()
 
 
+    def plot_derivative(self, reference=True, model=True):
+        """
+        Plots numerical derivatives of model/reference data
+        """
+
+        ############## dIDS/dVDS ###################
+        unique_vgss = np.unique(self.idvd_data[:, VGSID])
+        unique_vsbs = np.unique(self.idvd_data[:, VSBID])
+        vdsmax = np.max(self.idvd_data[:, VDSID])
+        vdmin = np.min(self.idvd_data[:, VDSID])
+        vds_array = np.linspace(vdmin, vdsmax, 1000)
+
+        fig, axs = plt.subplots(2, len(unique_vsbs), figsize=(15, 8))
+
+        for i, vsb in enumerate(unique_vsbs):
+            vdb_array = vds_array + vsb
+            mask_vsb = self.idvd_data[:, VSBID] == vsb
+
+            for vgs in unique_vgss:
+                mask_vgs = self.idvd_data[:, VGSID] == vgs
+                mask = mask_vgs & mask_vsb
+
+                data = self.idvd_data[mask]
+
+                if len(data) > 1:
+                    # model derivative
+                    if model:
+                        ids_model = self.model(vgs + vsb, vsb, vdb_array)
+                        dydx_model = np.gradient(ids_model, vds_array)
+                        axs[0, i].plot(
+                            vds_array,
+                            dydx_model,
+                            label=f"VGS: {vgs}"
+                        )
+
+                    # reference derivative
+                    if reference:
+                        x = data[:, VDSID]
+                        y = data[:, IDSID]
+                        dydx = np.gradient(y, x)
+                        axs[0, i].plot(
+                            x,
+                            dydx,
+                            linestyle='--',
+                            label=f"Ref VGS: {vgs}"
+                        )
+            axs[0, i].legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0
+            )
+
+            axs[0, i].set_title(f"dIDS/dVDS for VSB = {vsb}")
+
+        ############## dIDS/dVGS ###################
+        unique_vdss = np.unique(self.idvg_data[:, VDSID])
+        unique_vsbs = np.unique(self.idvg_data[:, VSBID])
+        vgsmax = np.max(self.idvg_data[:, VGSID])
+        vgsmin = np.min(self.idvg_data[:, VGSID])
+        vgs_array = np.linspace(vgsmin, vgsmax, 1000)
+
+        for i, vds in enumerate(unique_vdss):
+            mask_vds = self.idvg_data[:, VDSID] == vds
+
+            for vsb in unique_vsbs:
+                mask_vsb = self.idvg_data[:, VSBID] == vsb
+                mask = mask_vds & mask_vsb
+
+                data = self.idvg_data[mask]
+
+                if len(data) > 1:
+                    # model derivative
+                    if model:
+                        vgb_array = vgs_array + vsb
+                        ids_model = self.model(vgb_array, vsb, vds + vsb)
+                        dydx_model = np.gradient(ids_model, vgs_array)
+                        axs[1, i].plot(
+                            vgs_array,
+                            dydx_model,
+                            label=f"VSB: {vsb}"
+                        )
+
+                    # reference derivative
+                    if reference:
+                        x = data[:, VGSID]
+                        y = data[:, IDSID]
+                        dydx = np.gradient(y, x)
+                        axs[1, i].plot(
+                            x,
+                            dydx,
+                            linestyle='--',
+                            label=f"Ref VSB: {vsb}"
+                        )
+
+                    
+
+            axs[1, i].legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0
+            )
+            axs[1, i].set_title(f"dIDS/dVGS for VDS = {vds}")
+
+        plt.subplots_adjust(wspace=0.5, right=0.9)
+        plt.show()

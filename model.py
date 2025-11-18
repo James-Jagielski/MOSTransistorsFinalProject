@@ -361,7 +361,7 @@ class EKV_Model:
             plt.show()
         return Vt
 
-    def fit_Vts(self, plot=True):
+    def fit_Vts(self, plot=False):
         # for now
         # loop through VSBs, at one given VDS (max VDS, arbitrary)
         # vds = 0.
@@ -588,7 +588,7 @@ class EKV_Model:
         print(self.lambda_par)
         return self.lambda_par
 
-    def fit_lambdas(self, plot=True):
+    def fit_lambdas(self, plot=False):
         power = 2
         unique_vgss = np.unique(self.idvd_data[:, VGSID])
         unique_vsbs = np.unique(self.idvd_data[:, VSBID])
@@ -742,7 +742,7 @@ class EKV_Model:
         if I_ref.shape != I_model.shape:
             raise ValueError("I_ref and I_model must have same shape")
 
-        K = I_ref.size
+        K = len(I_ref)
         if K == 0:
             return 0.0, 0.0
 
@@ -862,7 +862,7 @@ class EKV_Model:
         plt.subplots_adjust(wspace=0.5, right=0.9)
         plt.show()
     
-    def plot_kappa(self, plot=True):
+    def plot_kappa(self, plot=False):
 
         # Extract arrays
         vgs = self.idvg_data[:, VGSID]
@@ -1063,33 +1063,45 @@ class EKV_Model:
         plt.axhline(2*np.sqrt(np.e) - 2, linestyle='--')
         plt.show()
 
-    def Gummel_symmetry_test(self, Vx_vals, VDS=0.5, VSB=0.0):
+    def Gummel_symmetry_test(self):
         """
         Gummel symmetry test:
         Computes Ix, dIx/dVx, and d^2Ix/dVx^2 vs Vx to visualize symmetry.
         """
-        Vx_vals = np.array(Vx_vals)
-        Ix_pos = np.array([self.model(Vx, VSB, VDS-VSB) for Vx in Vx_vals])
-        Ix_neg = np.array([self.model(-Vx, VSB, VDS-VSB) for Vx in Vx_vals])
-        Ix = Ix_pos - Ix_neg
-        dIx = np.gradient(Ix, Vx_vals)
-        d2Ix = np.gradient(dIx, Vx_vals)
-
-        plt.figure(figsize=(8,6))
-        plt.plot(Vx_vals, Ix, label='Ix')
-        plt.figure(figsize=(8,6))
-        plt.plot(Vx_vals, dIx, label='dIx/dVx')
-        plt.figure(figsize=(8,6))
-        plt.plot(Vx_vals, d2Ix, label='d²Ix/dVx²')
-        plt.xlabel("Vx (V)")
-        plt.ylabel("Current / Derivatives")
-        plt.title("Gummel Symmetry Test")
-        plt.grid(True)
+        vgbs = np.linspace(0, 3, 6)
+        for vgb in vgbs:
+            Vx_vals = np.linspace(-0.1, 0.1, 1000)
+            Id_vals = self.model(vgb, -Vx_vals, Vx_vals)
+            plt.plot(Vx_vals, Id_vals, label=f"VGB = {vgb}")
+        plt.title("Gummel Symmetry Test a")
+        plt.ylabel("Ix")
+        plt.xlabel("Vx")
         plt.legend()
-        plt.tight_layout()
         plt.show()
 
-        return Ix, dIx, d2Ix
+        for vgb in vgbs:
+            Vx_vals = np.linspace(-0.1, 0.1, 1000)
+            Id_vals = self.model(vgb, -Vx_vals, Vx_vals)
+            dId_vals = np.gradient(Id_vals, Vx_vals)
+            plt.plot(Vx_vals, dId_vals, label=f"VGB = {vgb}")
+        plt.title("Gummel Symmetry Test b")
+        plt.ylabel("dIx/dVx")
+        plt.xlabel("Vx")
+        plt.legend()
+        plt.show()
+
+        for vgb in vgbs:
+            Vx_vals = np.linspace(-0.1, 0.1, 1000)
+            Id_vals = self.model(vgb, -Vx_vals, Vx_vals)
+            dId_vals = np.gradient(Id_vals, Vx_vals)
+            ddId_vals = np.gradient(dId_vals, Vx_vals)
+            plt.plot(Vx_vals, ddId_vals, label=f"VGB = {vgb}")
+        plt.title("Gummel Symmetry Test c")
+        plt.ylabel("ddIx/ddVx")
+        plt.xlabel("Vx")
+        plt.legend()
+        plt.show()
+
 
 
     def gm_over_ID_sweep(self, VSB_vals=[0.0], VGS_min=0, VGS_max=1.5, n_points=1000, VDS=0.05):

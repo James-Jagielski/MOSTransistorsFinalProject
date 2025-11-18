@@ -388,7 +388,7 @@ class EKV_Model:
             plt.show()
         return Vt
 
-    def fit_Vts(self, plot=True):
+    def fit_Vts(self, plot=False):
         # for now
         # loop through VSBs, at one given VDS (max VDS, arbitrary)
         # vds = 0.
@@ -517,12 +517,187 @@ class EKV_Model:
         term2 = 2 * self.Ut * np.log(np.exp(np.sqrt(Isat / (A * Is))) - 1)
         return term1 - term2
 
+    def fit_ro(self, vsb_val, window_size=15, plot=False):
+        """
+        Fit Isat and Va for all VGS values at a fixed VSB.
+        Performs sliding-window linear regression on log(IDS) vs VDS.
+        """
+        subset = self.idvd_data[self.idvd_data[:, VSBID] == vsb_val]
+        vgs_values = sorted(np.unique(subset[:, VGSID]))
+
+        results = []
+
+        if plot:
+            plt.figure(figsize=(8,6))
+
+        for vgs_val in vgs_values:
+            # extract single VGS curve
+            curve = subset[subset[:, VGSID] == vgs_val]
+            curve = curve[np.argsort(curve[:, VDSID])]
+
+            VDS = curve[:, VDSID]
+            IDS = curve[:, IDSID]
+
+            # avoid log(0)
+            IDS = np.clip(IDS, 1e-30, None)
+            ln_IDS = np.log(IDS)
+
+            # --- sliding-window regression ---
+            best_r2 = -np.inf
+            best_indices = None
+            MAX_SLOPE = 10  # prevent triode region
+
+            for i in range(len(VDS) - window_size):
+                x_seg = VDS[i:i + window_size]
+                y_seg = ln_IDS[i:i + window_size]
+                slope, intercept, r_value, _, _ = linregress(x_seg, y_seg)
+
+                if abs(slope) > MAX_SLOPE:
+                    continue
+
+                if r_value**2 > best_r2:
+                    best_r2 = r_value**2
+                    best_indices = (i, i + window_size)
+
+            if best_indices is None:
+                print(f"No valid linear region for VSB={vsb_val}, VGS={vgs_val}")
+                continue
+
+            i_start, i_end = best_indices
+            x_lin = VDS[i_start:i_end]
+            y_lin = ln_IDS[i_start:i_end]
+
+            slope, intercept, r_value, _, _ = linregress(x_lin, y_lin)
+
+            Va = -intercept / slope
+            Isat = np.exp(intercept)
+
+            results.append({
+                "VGS": vgs_val,
+                "Isat": Isat,
+                "Va": Va,
+                "R2": r_value**2
+            })
+
+            
+            if plot:
+                # raw data
+                plt.semilogy(VDS, IDS, '.', label=f"VGS={vgs_val}", markersize=4)
+
+                # plot sliding-window segment
+                fit_ids_segment = np.exp(intercept + slope * x_lin)
+                plt.semilogy(x_lin, fit_ids_segment, '--', linewidth=2, color='blue')
+
+                # plot full extrapolated line through the y-intercept
+                fit_ids_full = np.exp(intercept + slope * VDS)
+                plt.semilogy(VDS, fit_ids_full, '-', linewidth=1.5, color='red')
+
+        if plot:
+            plt.xlabel("VDS (V)")
+            plt.ylabel("IDS (A)")
+            plt.title(f"ID–VDS Early-region fits for VSB={vsb_val}")
+            plt.ylim(10e-4,10e-2)
+            plt.legend(fontsize=7)
+            plt.grid(True, which="both")
+            plt.show()
+
+        self.isat_fit_results = results
+        return results
+    def extract_isat_Va(self, plot=False):
+        """
+        Extract Isat and Va for all VSBs and VGS values,
+        fits continuous 2D polynomial functions, and optionally plots the results
+        with fits overlaid on data points.
+        
+        Saves:
+            self.Isat_fit(Vgs, Vsb) - continuous function of Isat
+            self.Va_fit(Vgs, Vsb)    - continuous function of Va
+        """
+
+        # ---- Collect all raw data ----
+        all_results = {}
+        all_Isat, all_Va = [], []
+        all_VGS, all_VSB = [], []
+
+        vsbs = np.unique(self.idvd_data[:, VSBID])
+        colors = plt.cm.tab20.colors
+
+        for idx, vsb in enumerate(vsbs):
+            results = self.fit_ro(vsb, plot=False)
+            all_results[vsb] = results
+            for r in results:
+                all_Isat.append(r["Isat"])
+                all_Va.append(r["Va"])
+                all_VGS.append(r["VGS"])
+                all_VSB.append(vsb)
+
+        # Convert lists to arrays
+        Vgs_arr = np.array(all_VGS)
+        Vsb_arr = np.array(all_VSB)
+        Va_arr = np.array(all_Va)
+        Isat_arr = np.array(all_Isat)
+
+        # ---- 2D polynomial function ----
+        def poly2D(X, a0, a1, a2, a3, a4, a5):
+            Vgs, Vsb = X
+            return a0 + a1*Vgs + a2*Vsb + a3*Vgs**2 + a4*Vgs*Vsb + a5*Vsb**2
+
+        # Fit Va
+        params_va, _ = curve_fit(poly2D, (Vgs_arr, Vsb_arr), Va_arr)
+        self.Va_fit = lambda Vgs, Vsb: poly2D((Vgs, Vsb), *params_va)
+
+        # Fit Isat (log scale for stability)
+        params_is, _ = curve_fit(poly2D, (Vgs_arr, Vsb_arr), np.log(Isat_arr))
+        self.Isat_fit = lambda Vgs, Vsb: np.exp(poly2D((Vgs, Vsb), *params_is))
+
+        # ---- Optional plotting ----
+        if plot:
+            fig, axs = plt.subplots(1, 2, figsize=(14,6))
+
+            # ---- Plot Isat ----
+            for idx, (vsb, res) in enumerate(all_results.items()):
+                VGS = np.array([r["VGS"] for r in res])
+                Isat = np.array([r["Isat"] for r in res])
+                axs[0].plot(VGS, Isat, 'o', color=colors[idx % len(colors)], label=f"VSB={vsb}")
+
+                # Overlay continuous fit for the same VGS values
+                Isat_fit_vals = self.Isat_fit(VGS, vsb*np.ones_like(VGS))
+                axs[0].plot(VGS, Isat_fit_vals, '-', color=colors[idx % len(colors)])
+
+            axs[0].set_xlabel("VGS (V)")
+            axs[0].set_ylabel("Isat (A)")
+            axs[0].set_title("Isat vs VGS for all VSBs")
+            axs[0].grid(True)
+            axs[0].set_yscale('log')
+            axs[0].legend()
+
+            # ---- Plot Va ----
+            for idx, (vsb, res) in enumerate(all_results.items()):
+                VGS = np.array([r["VGS"] for r in res])
+                Va = np.array([r["Va"] for r in res])
+                axs[1].plot(VGS, Va, 'o', color=colors[idx % len(colors)], label=f"VSB={vsb}")
+
+                # Overlay continuous fit for the same VGS values
+                Va_fit_vals = self.Va_fit(VGS, vsb*np.ones_like(VGS))
+                axs[1].plot(VGS, Va_fit_vals, '-', color=colors[idx % len(colors)])
+
+            axs[1].set_xlabel("VGS (V)")
+            axs[1].set_ylabel("Va (V)")
+            axs[1].set_title("Va vs VGS for all VSBs")
+            axs[1].grid(True)
+            axs[1].legend()
+
+            plt.tight_layout()
+            plt.show()
+
+        print("Continuous 2D fits created and plotted: self.Va_fit(Vgs,Vsb), self.Isat_fit(Vgs,Vsb)")
 
     def fit_all(self):
         """
         Method to fit all parameters in order.
         """
         # generate kappas for each unique VSB
+        self.extract_isat_Va()
         self.fit_Vts()
         # print(self.gamma)
          # After fitting gamma in fit_Vts():
@@ -554,8 +729,8 @@ class EKV_Model:
         IS *= (1 + self.lambda_par*(Vds))
 
         # softplus = ln(1 + exp(x)) implemented via log1p(exp(x))
-        argF = ((self.Kappa * (VGB - vt- VSB)) ) / (2.0 * self.Ut)
-        argR = ((self.Kappa * (VGB - vt- VDB)) ) / (2.0 * self.Ut)
+        argF = ((self.Kappa * (VGB - vt - VSB) )) / (2.0 * self.Ut)
+        argR = ((self.Kappa * (VGB - vt - VDB ))) / (2.0 * self.Ut)
 
         softF = np.log(1 + np.exp(argF))
         softR = np.log(1 + np.exp(argR))
@@ -563,41 +738,19 @@ class EKV_Model:
         IF = IS * (softF ** 2)
         IR = IS * (softR ** 2)
 
-        Isat = np.max(IF)
+        I_EKV = IF - IR 
 
-        VDSsat = self.VDSsat_EKV(Isat, IS, A=0.8)
-        IF_sat = IF / (1 + IF * Vds / VDSsat)
-        IR_sat = IR / (1 + IR * Vds / VDSsat)
-        I_EKV = IF_sat - IR_sat
-        return I_EKV
-    
-    def compute_error(self, I_ref, I_model, weights=None, eps=1e-12, rel_floor_factor=1e-8):
-        I_ref = np.asarray(I_ref, dtype=float)
-        I_model = np.asarray(I_model, dtype=float)
-        if I_ref.shape != I_model.shape:
-            raise ValueError("I_ref and I_model must have same shape")
+        # Vgs, Vds, VSB can be arrays or scalars
+        Isat = self.Isat_fit(Vgs, VSB)
+        Va = self.Va_fit(Vgs, VSB)
+        I_EKV = IF - IR
 
-        K = I_ref.size
-        if K == 0:
-            return 0.0, 0.0
+        # Early effect correction
+        # ID = I_EKV / (1 + I_EKV / Isat)  # simplified saturation clamping
+        ID = I_EKV * (1 + Vds / Va)  # Early effect
 
-        if weights is None:
-            weights = np.ones_like(I_ref, dtype=float)
-        else:
-            weights = np.asarray(weights, dtype=float)
-            if weights.shape != I_ref.shape:
-                raise ValueError("weights must match I_ref shape")
 
-        # robust denominator: use max(|I_ref|, rel_floor, eps)
-        rel_floor = np.maximum(np.max(np.abs(I_ref)) * rel_floor_factor, eps)
-        denom = np.maximum(np.abs(I_ref), rel_floor)
-
-        rel = (I_model - I_ref) / denom
-        # replace any non-finite rel with large finite number (or drop those points)
-        rel = np.where(np.isfinite(rel), rel, 0.0)   # alternative: raise or drop
-        E_I = float(np.sum(weights * rel**2))
-        E_rms = float(np.sqrt(E_I / float(K)))
-        return E_rms
+        return ID
     
     def plot(self, reference=True, model=True):
         """
@@ -624,7 +777,7 @@ class EKV_Model:
                     if model:
                         axs[0, i].plot(
                             vds_array,
-                            (self.model(vgs + vsb, vsb, vdb_array)),
+                            self.model(vgs + vsb, vsb, vdb_array),
                             label=f"VGS: {vgs}"
                         )
                         
@@ -635,13 +788,6 @@ class EKV_Model:
                             label=f"Ref VGS: {vgs}",
                             linestyle = '--'
                         )
-
-                    Vds_points = self.idvd_data[mask][:, VDSID]
-                    Iref_points = self.idvd_data[mask][:, IDSID]
-                    # pass Vds + vsb (body-referenced Vds) to the model
-                    Imodel = self.model(vgs + vsb, vsb, Vds_points + vsb)
-                    E_rms = self.compute_error(Iref_points, Imodel)
-                    print(f"ID/VDS Error vgs={vgs}, vsb={vsb}: E_rms={E_rms:.6e}")
                     
             axs[0, i].legend(
                 loc="center left",
@@ -680,13 +826,6 @@ class EKV_Model:
                             linestyle = '--'
                         )
                     
-                    Vgs_points = self.idvg_data[mask][:, VGSID]
-                    Iref_points = self.idvg_data[mask][:, IDSID]
-                    # pass Vds + vsb (body-referenced Vds) to the model
-                    Imodel = self.model(Vgs_points + vsb, vsb, vds + vsb)
-                    E_rms = self.compute_error(Iref_points, Imodel)
-                    print(f"ID/VGS Error vds={vds}, vsb={vsb}: E_rms={E_rms:.6e}")
-                    
             axs[1, i].legend(
                 loc="center left",
                 bbox_to_anchor=(1.02, 0.5),
@@ -697,7 +836,7 @@ class EKV_Model:
         plt.subplots_adjust(wspace=0.5, right=0.9)
         plt.show()
     
-    def plot_kappa(self, plot=True):
+    def plot_kappa(self, plot=False):
 
         # Extract arrays
         vgs = self.idvg_data[:, VGSID]
@@ -743,7 +882,7 @@ class EKV_Model:
             plt.show()
 
 
-    def plot_derivative(self, reference=True, model=True):
+    def plot_derivative(self, reference=False, model=False):
         """
         Plots numerical derivatives of model/reference data
         """
@@ -789,15 +928,6 @@ class EKV_Model:
                             linestyle='--',
                             label=f"Ref VGS: {vgs}"
                         )
-
-                    Vds_points = self.idvd_data[mask][:, VDSID]
-                    Iref_points = np.gradient(self.idvd_data[mask][:, IDSID], Vds_points)
-                    # pass Vds + vsb (body-referenced Vds) to the model
-                    Imodel = self.model(vgs + vsb, vsb, Vds_points + vsb)
-                    Imodel = np.gradient(Imodel, Vds_points)
-                    E_rms = self.compute_error(Iref_points, Imodel)
-                    print(f"dID/dVDS Error vgs={vgs}, vsb={vsb}: E_rms={E_rms:.6e}")
-
             axs[0, i].legend(
                 loc="center left",
                 bbox_to_anchor=(1.02, 0.5),
@@ -845,14 +975,6 @@ class EKV_Model:
                             linestyle='--',
                             label=f"Ref VSB: {vsb}"
                         )
-                    
-                    Vgs_points = self.idvg_data[mask][:, VGSID]
-                    Iref_points = np.gradient(self.idvg_data[mask][:, IDSID], Vgs_points)
-                    # pass Vds + vsb (body-referenced Vds) to the model
-                    Imodel = self.model(Vgs_points + vsb, vsb, vds + vsb)
-                    Imodel = np.gradient(Imodel, Vgs_points)
-                    E_rms = self.compute_error(Iref_points, Imodel)
-                    print(f"dID/dVGS Error vds={vds}, vsb={vsb}: E_rms={E_rms:.6e}")
 
                     
 
